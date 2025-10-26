@@ -343,16 +343,23 @@ MATCH_PHASE:
 
 func extractIPs(m *dns.Msg, ipv6Enabled bool) []string {
 	var ips []string
+	var v6 []string
+	var v4 []string
 	for _, a := range m.Answer {
 		switch rr := a.(type) {
 		case *dns.A:
-			ips = append(ips, rr.A.String())
+			v4 = append(v4, rr.A.String())
 		case *dns.AAAA:
 			if ipv6Enabled {
-				ips = append(ips, rr.AAAA.String())
+				v6 = append(v6, rr.AAAA.String())
 			}
 		}
 	}
+	if ipv6Enabled && len(v6) > 0 {
+		return v6
+	}
+	// fallback to IPv4 when no IPv6 or disabled
+	ips = append(ips, v4...)
 	return ips
 }
 
@@ -361,21 +368,43 @@ func filterByIPv6(m *dns.Msg, ipv6Enabled bool) *dns.Msg {
 		return nil
 	}
 	out := m.Copy()
-	ans := []dns.RR{}
+	if !ipv6Enabled {
+		ans := []dns.RR{}
+		for _, a := range out.Answer {
+			switch rr := a.(type) {
+			case *dns.A:
+				ans = append(ans, rr)
+			case *dns.AAAA:
+				// skip IPv6 when disabled
+			default:
+				// keep other RRs as-is
+				ans = append(ans, a)
+			}
+		}
+		out.Answer = ans
+		return out
+	}
+	// ipv6Enabled: prefer IPv6 answers if available
+	var aaaa []dns.RR
+	var av4 []dns.RR
+	var others []dns.RR
 	for _, a := range out.Answer {
 		switch rr := a.(type) {
 		case *dns.A:
-			ans = append(ans, rr)
+			av4 = append(av4, rr)
 		case *dns.AAAA:
-			if ipv6Enabled {
-				ans = append(ans, rr)
-			}
+			aaaa = append(aaaa, rr)
 		default:
-			// keep other RRs as-is
-			ans = append(ans, a)
+			others = append(others, a)
 		}
 	}
-	out.Answer = ans
+	if len(aaaa) > 0 {
+		// Prefer IPv6: keep AAAA and non-address records, drop A
+		out.Answer = append(append([]dns.RR{}, aaaa...), others...)
+	} else {
+		// No IPv6 available: keep A and non-address records
+		out.Answer = append(append([]dns.RR{}, av4...), others...)
+	}
 	return out
 }
 
