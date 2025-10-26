@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
+	"github.com/miekg/dns"
 	"log"
 	"net"
 	"net/url"
 	"os"
 	"time"
 
-	"github.com/miekg/dns"
 	"geo-dns/bootstrap"
 	"geo-dns/cache"
 	"geo-dns/config"
@@ -51,10 +51,16 @@ func main() {
 			nsAdapters = append(nsAdapters, &udpAdapter{impl: nameserver.NewUDP(ns.Name, ns.Server)})
 		case "doh":
 			u, err := url.Parse(ns.Server)
-			if err != nil { log.Printf("skip doh ns %s: %v", ns.Name, err); continue }
+			if err != nil {
+				log.Printf("skip doh ns %s: %v", ns.Name, err)
+				continue
+			}
 			ips := bootstrapIPsByHost[u.Hostname()]
 			doh, err := nameserver.NewDoH(ns.Name, ns.Server, ips)
-			if err != nil { log.Printf("skip doh ns %s: %v", ns.Name, err); continue }
+			if err != nil {
+				log.Printf("skip doh ns %s: %v", ns.Name, err)
+				continue
+			}
 			nsAdapters = append(nsAdapters, &dohAdapter{impl: doh})
 		default:
 			log.Printf("unknown ns type %s for %s", ns.Type, ns.Name)
@@ -62,30 +68,80 @@ func main() {
 	}
 	// Build group map: group -> nameserver names
 	groupMap := map[string][]string{}
+	var groupOrder []string
 	for _, g := range cfg.NameserverGroup {
 		groupMap[g.Name] = append([]string{}, g.Nameservers...)
+		groupOrder = append(groupOrder, g.Name)
 	}
 	// Build ECS map: nsName -> CIDR from ns-level or group-level
 	ecsByNS := map[string]string{}
 	for _, ns := range cfg.Nameservers {
-		if ns.ECS != "" { ecsByNS[ns.Name] = ns.ECS }
+		if ns.ECS != "" {
+			ecsByNS[ns.Name] = ns.ECS
+		}
 	}
 	for _, g := range cfg.NameserverGroup {
-		if g.ECS == "" { continue }
+		if g.ECS == "" {
+			continue
+		}
 		for _, name := range g.Nameservers {
-			if _, ok := ecsByNS[name]; !ok { ecsByNS[name] = g.ECS }
+			if _, ok := ecsByNS[name]; !ok {
+				ecsByNS[name] = g.ECS
+			}
+		}
+	}
+	// Build ECS override map: nsName -> override flag
+	ecsOverrideByNS := map[string]bool{}
+	for _, ns := range cfg.Nameservers {
+		if ns.ECSOverride {
+			ecsOverrideByNS[ns.Name] = true
+		}
+	}
+	for _, g := range cfg.NameserverGroup {
+		if g.ECSOverride {
+			for _, name := range g.Nameservers {
+				if _, ok := ecsOverrideByNS[name]; !ok {
+					ecsOverrideByNS[name] = true
+				}
+			}
 		}
 	}
 	// Parse policy rules
 	rules := policy.Parse(cfg.NameserverPolicy)
+	// Cache toggle
+	cacheEnabled := true
+	if cfg.Cache != nil {
+		cacheEnabled = cfg.Cache.Enable
+	}
+	var cacheInst *cache.Cache
+	if cacheEnabled {
+		cacheInst = cache.New()
+	} else {
+		log.Printf("level=info event=cache_disabled reason=config cache.enable=false")
+		cacheInst = nil
+	}
+	// Log level toggle for discard debug
+	debugEnabled := false
+	if cfg.Log != nil && cfg.Log.Level == "debug" {
+		debugEnabled = true
+	}
+	// IPv6 toggle
+	ipv6Enabled := true
+	if cfg.IPv6 != nil {
+		ipv6Enabled = *cfg.IPv6
+	}
 	coord := &server.Coordinator{
-		ListenAddr: cfg.Listen,
-		Cache:      cache.New(),
-		Rules:      rules,
-		GroupMap:   groupMap,
-		NS:         nsAdapters,
-		GeoDB:      geoDB,
-		ECSByNS:    ecsByNS,
+		ListenAddr:      cfg.Listen,
+		Cache:           cacheInst,
+		Rules:           rules,
+		GroupMap:        groupMap,
+		NS:              nsAdapters,
+		GeoDB:           geoDB,
+		ECSByNS:         ecsByNS,
+		ECSOverrideByNS: ecsOverrideByNS,
+		DebugEnabled:    debugEnabled,
+		GroupOrder:      groupOrder,
+		IPv6Enabled:     ipv6Enabled,
 	}
 	if err := coord.Start(); err != nil {
 		log.Printf("server error: %v", err)

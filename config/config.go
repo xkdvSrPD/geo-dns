@@ -23,6 +23,14 @@ type NameServerGroup struct {
 	ECS         string   `yaml:"ecs"`
 }
 
+type CacheSection struct {
+	Enable bool `yaml:"enable"`
+}
+
+type LogSection struct {
+	Level string `yaml:"level"` // debug | info
+}
+
 type Config struct {
 	Listen               string             `yaml:"listen"`
 	BootstrapNameservers []string           `yaml:"bootstrap-nameservers"`
@@ -30,6 +38,9 @@ type Config struct {
 	NameserverGroup      []NameServerGroup  `yaml:"nameserver-group"`
 	NameserverPolicy     []string           `yaml:"nameserver-policy"`
 	GeoxURL              string             `yaml:"geox-url"`
+	Cache                *CacheSection      `yaml:"cache"`
+	Log                  *LogSection        `yaml:"log"`
+	IPv6                 *bool              `yaml:"ipv6"` // enable returning AAAA records
 }
 
 func Load(path string) (*Config, error) {
@@ -51,6 +62,23 @@ func LoadFromReader(r io.Reader) (*Config, error) {
 	// Normalize
 	for i := range c.Nameservers {
 		c.Nameservers[i].Type = strings.ToLower(strings.TrimSpace(c.Nameservers[i].Type))
+	}
+	// Default: enable cache if not specified
+	if c.Cache == nil {
+		c.Cache = &CacheSection{Enable: true}
+	}
+	if c.Log == nil {
+		c.Log = &LogSection{Level: "info"}
+	} else {
+		c.Log.Level = strings.ToLower(strings.TrimSpace(c.Log.Level))
+		if c.Log.Level == "" {
+			c.Log.Level = "info"
+		}
+	}
+	// Default IPv6 behavior: enabled if not set (backward compatible)
+	if c.IPv6 == nil {
+		val := true
+		c.IPv6 = &val
 	}
 	return &c, nil
 }
